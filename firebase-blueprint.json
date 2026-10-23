@@ -1,0 +1,98 @@
+{
+  "entities": {
+    "UserNewspaperSource": {
+      "title": "User Newspaper Source",
+      "description": "User-managed custom newspaper or resource source for daily BCS international affairs analysis",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of the newspaper in Bengali"
+        },
+        "englishName": {
+          "type": "string",
+          "description": "English name of the newspaper publication"
+        },
+        "section": {
+          "type": "string",
+          "description": "Target international section name"
+        },
+        "webUrl": {
+          "type": "string",
+          "description": "Main website URL of the newspaper"
+        },
+        "rssUrl": {
+          "type": "string",
+          "description": "Optional RSS/Atom feed URL for standardized article feeds"
+        },
+        "category": {
+          "type": "string",
+          "description": "Category tag (e.g. আন্তর্জাতিক, অর্থনীতি, কূটনীতি)"
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Whether this source is active for daily bulletin synthesis"
+        },
+        "isDefault": {
+          "type": "boolean",
+          "description": "Whether this source is part of the default curated set"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp via FieldValue.serverTimestamp()"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp via FieldValue.serverTimestamp()"
+        }
+      },
+      "required": ["name", "englishName", "section", "webUrl", "category", "isActive", "isDefault", "createdAt", "updatedAt"]
+    },
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Authenticated user profile information",
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "description": "User's display name from Google Sign-In"
+        },
+        "email": {
+          "type": "string",
+          "description": "User's Google email"
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "User's Google avatar URL"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Account first login timestamp"
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Account last login timestamp"
+        }
+      },
+      "required": ["createdAt", "lastLoginAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/newspapers/{newspaperId}": {
+      "schema": {
+        "$ref": "#/entities/UserNewspaperSource"
+      },
+      "description": "User configured custom and default newspapers for international affairs"
+    },
+    "/users/{userId}/profile/info": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "User profile metadata"
+    }
+  }
+}

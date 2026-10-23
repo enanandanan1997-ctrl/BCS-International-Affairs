@@ -1,0 +1,6 @@
+{
+  "name": "BCS Daily Digest",
+  "description": "Daily BCS Current Affairs, detailed analysis, distraction-free reading, offline saved topics, and interactive MCQs quiz tracker.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

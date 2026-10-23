@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">BCS Daily Digest</string>
+    <string name="nav_daily">Daily Bulletin</string>
+    <string name="nav_quiz">Daily Quiz</string>
+    <string name="nav_saved">Saved Offline</string>
+    <string name="reading_mode_title">Distraction-Free Reading</string>
+    <string name="quiz_title">BCS Daily Quiz</string>
+    <string name="quiz_subtitle">Test your grasp of today\'s news &amp; current affairs</string>
+</resources>
