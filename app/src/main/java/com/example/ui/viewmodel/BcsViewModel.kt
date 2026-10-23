@@ -67,7 +67,7 @@ class BcsViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedCategory = MutableStateFlow("সব")
     val selectedCategory: StateFlow<String> = _selectedCategory.asStateFlow()
 
-    private val _expandedTopicIds = MutableStateFlow<Set<String>>(setOf("t1", "t2"))
+    private val _expandedTopicIds = MutableStateFlow<Set<String>>(emptySet())
     val expandedTopicIds: StateFlow<Set<String>> = _expandedTopicIds.asStateFlow()
 
     // Saved Topics for Offline Reading (Room Database Entity)
@@ -85,6 +85,18 @@ class BcsViewModel(application: Application) : AndroidViewModel(application) {
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptySet()
         )
+
+    // Global Search across International Affairs Content
+    private val _globalSearchQuery = MutableStateFlow("")
+    val globalSearchQuery: StateFlow<String> = _globalSearchQuery.asStateFlow()
+
+    fun setGlobalSearchQuery(query: String) {
+        _globalSearchQuery.value = query
+    }
+
+    fun clearGlobalSearchQuery() {
+        _globalSearchQuery.value = ""
+    }
 
     // Quick Revision
     private val _revisionSearchQuery = MutableStateFlow("")
@@ -162,16 +174,20 @@ class BcsViewModel(application: Application) : AndroidViewModel(application) {
     fun triggerDailySync(customDateLabel: String? = null) {
         val now = System.currentTimeMillis()
         if (syncService.syncState.value.isSyncing) return
-        if (now - lastManualSyncTime < 10_000L) return
+        if (now - lastManualSyncTime < 5_000L) return
         lastManualSyncTime = now
 
         viewModelScope.launch {
-            val activeSources = _managedNewspapers.value.filter { it.isActive }
-            val result = syncService.performDailySync(activeSources, customDateLabel)
-            result.onSuccess { newReport ->
-                _currentReport.value = newReport
-                val existing = _allReports.value.filterNot { it.id == newReport.id }
-                _allReports.value = listOf(newReport) + existing
+            try {
+                val activeSources = _managedNewspapers.value.filter { it.isActive }
+                val result = syncService.performDailySync(activeSources, customDateLabel)
+                result.onSuccess { newReport ->
+                    _currentReport.value = newReport
+                    val existing = _allReports.value.filterNot { it.id == newReport.id }
+                    _allReports.value = listOf(newReport) + existing
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("BcsViewModel", "Sync error: ${e.message}", e)
             }
         }
     }

@@ -31,15 +31,14 @@ object GeminiManager {
 
     // Supported modern models according to gemini-api skill
     private val CANDIDATE_MODELS = listOf(
-        "gemini-2.5-flash",
         "gemini-3.5-flash",
         "gemini-flash-latest"
     )
 
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(45, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
-        .writeTimeout(45, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(12, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
         .build()
 
     private fun getApiKey(): String {
@@ -76,11 +75,9 @@ object GeminiManager {
             5. Deliver verified factual developments from world affairs and Bangladeshi national newspapers (Prothom Alo, The Daily Star, Bonik Barta, Dhaka Tribune).
         """.trimIndent()
 
-        // Try candidate models with and without search grounding if 429 quota occurs
         var lastException: Exception? = null
 
         for (model in CANDIDATE_MODELS) {
-            // First try with search grounding (if requested), then without search grounding if 429 is encountered
             val groundingAttempts = if (enableSearchGrounding) listOf(true, false) else listOf(false)
 
             for (useGrounding in groundingAttempts) {
@@ -96,10 +93,13 @@ object GeminiManager {
                     val responseBody = response.body?.string() ?: ""
 
                     if (response.code == 429) {
-                        Log.w(TAG, "Model $model (grounding=$useGrounding) hit 429 Quota Exceeded. Trying fallback...")
-                        lastException = QuotaExceededException("কোটা সীমা সাময়িকভাবে অতিক্রান্ত (429 Rate Limit/Quota Exceeded)")
-                        delay(600) // Brief backoff
-                        continue
+                        Log.w(TAG, "Gemini API 429 Quota Exceeded. Fast-failing to preserve app responsiveness.")
+                        return@withContext Result.success(
+                            ChatMessage(
+                                role = "model",
+                                text = "অনলাইন এআই কোটা সীমা সাময়িকভাবে অতিক্রান্ত হয়েছে (429 Rate Limit)।\n\nপরামর্শ: অফলাইনেও ৪টি পত্রিকার আজকের সমস্ত বিষয়, ৮ স্তরের বিশ্লেষণ, কুইক রিভিশন এবং সংরক্ষিত বিষয়াবলী সম্পূর্ণ কার্যকর রয়েছে।"
+                            )
+                        )
                     }
 
                     if (!response.isSuccessful) {
@@ -118,16 +118,6 @@ object GeminiManager {
                     lastException = e
                 }
             }
-        }
-
-        // If all attempts failed due to 429 or network, return friendly fallback
-        if (lastException is QuotaExceededException) {
-            return@withContext Result.success(
-                ChatMessage(
-                    role = "model",
-                    text = "অনলাইন এআই কোটা সীমা সাময়িকভাবে অতিক্রান্ত হয়েছে (429 Rate Limit)।\n\nপরামর্শ: কিছু মুহূর্ত পর পুনরায় চ্যাট করুন। এর মধ্যে আপনি অফলাইনেও ৪টি পত্রিকার আজকের সমস্ত বিষয়, ৮ স্তরের বিশ্লেষণ, কুইক রিভিশন এবং সংরক্ষিত বিষয়াবলী সম্পূর্ণ ব্যবহার করতে পারবেন।"
-                )
-            )
         }
 
         Result.failure(lastException ?: Exception("রেসপন্স পাওয়া যায়নি।"))
@@ -154,7 +144,6 @@ object GeminiManager {
         var lastException: Exception? = null
 
         for (model in CANDIDATE_MODELS) {
-            // First try with search grounding, then without search grounding if 429
             val groundingAttempts = listOf(true, false)
 
             for (useGrounding in groundingAttempts) {
@@ -170,10 +159,8 @@ object GeminiManager {
                     val responseBody = response.body?.string() ?: ""
 
                     if (response.code == 429) {
-                        Log.w(TAG, "Analysis with $model (grounding=$useGrounding) hit 429 Quota Exceeded. Trying fallback...")
-                        lastException = QuotaExceededException("জেমিনি এআই কোটা লিমিট (429 Rate Limit / Quota Exceeded)")
-                        delay(600)
-                        continue
+                        Log.w(TAG, "Gemini API 429 Quota Exceeded. Fast-failing so live offline news model takes over immediately.")
+                        return@withContext Result.failure(QuotaExceededException("জেমিনি এআই কোটা লিমিট (429 Rate Limit / Quota Exceeded)"))
                     }
 
                     if (!response.isSuccessful) {

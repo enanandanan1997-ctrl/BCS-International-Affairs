@@ -20,6 +20,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.*
@@ -42,249 +43,682 @@ fun DailyReportScreen(
     val bookmarkedIds by viewModel.bookmarkedIds.collectAsState()
     val savedTopicIds by viewModel.savedTopicIds.collectAsState()
     val syncState by viewModel.syncState.collectAsState()
+    val globalSearchQuery by viewModel.globalSearchQuery.collectAsState()
 
     val categories = listOf("সব", "ভূ-রাজনীতি ও আন্তর্জাতিক নিরাপত্তা", "দ্বিপাক্ষিক সম্পর্ক ও আঞ্চলিক কূটনীতি", "বৈশ্বিক অর্থনীতি ও বাণিজ্য", "পরিবেশ, জলবায়ু কূটনীতি ও আন্তর্জাতিক বাণিজ্য", "ভৌগোলিক রাজনীতি ও কৌশলগত জলপথ")
 
     val filteredTopics = remember(report, selectedCategory) {
-        if (selectedCategory == "সব") report.topics
+        val baseList = if (selectedCategory == "সব") report.topics
         else report.topics.filter { it.category == selectedCategory }
+        // Latest articles are shown at first (#1 is the latest, primary headline of the day)
+        baseList.sortedBy { it.importanceRank }
     }
 
-    LazyColumn(
-        modifier = modifier
-            .fillMaxSize()
-            .testTag("daily_report_list"),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+    // Global Search across all international affairs content
+    val queryTrimmed = globalSearchQuery.trim()
+    val isSearchActive = queryTrimmed.isNotBlank()
+
+    val searchResults = remember(report, queryTrimmed) {
+        if (queryTrimmed.isBlank()) null
+        else {
+            val q = queryTrimmed.lowercase()
+            val matchesText = { text: String -> text.lowercase().contains(q) }
+
+            val matchingTopics = report.topics.filter { t ->
+                matchesText(t.title) ||
+                matchesText(t.category) ||
+                matchesText(t.todaysEvent) ||
+                matchesText(t.whyImportant) ||
+                matchesText(t.background) ||
+                matchesText(t.bangladeshRelevance) ||
+                t.bcsTakeaways.any { matchesText(it) } ||
+                t.importantFacts.any { matchesText(it.title) || matchesText(it.detail) } ||
+                t.importantEntities.persons.any { matchesText(it) } ||
+                t.importantEntities.countries.any { matchesText(it) } ||
+                t.importantEntities.organizations.any { matchesText(it) } ||
+                t.importantEntities.alliances.any { matchesText(it) } ||
+                t.reportedBy.any { matchesText(it) }
+            }.sortedBy { it.importanceRank }
+
+            val matchingHeadlines = report.topHeadlines.filter { matchesText(it) }
+
+            val matchingRevisions = report.quickRevisions.filter {
+                matchesText(it.questionOrFact) || matchesText(it.answer) || matchesText(it.category)
+            }
+
+            val matchingMcqs = report.mcqTest.filter {
+                matchesText(it.question) || matchesText(it.explanation) || it.options.any { opt -> matchesText(opt) }
+            }
+
+            val matchingWrittenViva = report.writtenVivaAngles.filter {
+                matchesText(it.issue) || matchesText(it.possibleQuestion) || it.keyPoints.any { kp -> matchesText(kp) } || matchesText(it.analyticalTip)
+            }
+
+            GlobalSearchResultsHolder(
+                query = queryTrimmed,
+                topics = matchingTopics,
+                headlines = matchingHeadlines,
+                revisions = matchingRevisions,
+                mcqs = matchingMcqs,
+                writtenViva = matchingWrittenViva
+            )
+        }
+    }
+
+    Column(
+        modifier = modifier.fillMaxSize()
     ) {
-        // 1. Bangladesh Standard Time (BST) Banner
-        item {
-            BstDateBanner(
-                report = report,
-                onSwitchDateClick = onOpenDatePicker
+        // 0. Global Search Bar pinned at the very top of the main screen
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            GlobalSearchBar(
+                query = globalSearchQuery,
+                onQueryChange = { viewModel.setGlobalSearchQuery(it) },
+                onClearQuery = { viewModel.clearGlobalSearchQuery() },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
             )
         }
 
-        // 1.1 6:00 AM BST Daily Edition & Real-Time Sync Status Banner
-        item {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = if (syncState.isSyncing) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                        if (syncState.isSyncing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Schedule,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (syncState.isSyncing) {
-                                syncState.progressMessage.ifBlank { "৪টি পত্রিকার খবর আপডেট হচ্ছে..." }
-                            } else {
-                                "🌅 প্রতিদিন সকাল ০৬:০০ BST স্বয়ংক্রিয় সংস্করণ • ৪টি জাতীয় দৈনিকের রিয়েল-টাইম কভারেজ"
-                            },
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    if (!syncState.isSyncing) {
-                        IconButton(
-                            onClick = { viewModel.triggerDailySync() },
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "এখনই ৪টি পত্রিকা রিফ্রেশ করুন",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Daily Comparison / Continuity Card (🆕 নতুন কী? 🔄 চলমান? 📌 আরও গুরুত্বপূর্ণ?)
-        item {
-            DailyComparisonCard(dayComparison = report.dayComparison)
-        }
-
-        // 3. Top International Affairs Headlines of the Day
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color(0xFFE53935).copy(alpha = 0.15f),
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(text = "🔥", fontSize = 14.sp)
-                            }
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "আজকের প্রধান আন্তর্জাতিক ঘটনাবলি (Top Headlines)",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    report.topHeadlines.forEachIndexed { index, headline ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("daily_report_list"),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            if (isSearchActive && searchResults != null) {
+                // ==================== SEARCH RESULTS MODE ====================
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                        ),
+                        border = CardDefaults.outlinedCardBorder().copy(width = 1.dp)
+                    ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.Top
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer,
-                                modifier = Modifier.size(20.dp)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "🔍 অনুসন্ধান: \"$queryTrimmed\"",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Text(
+                                    text = if (searchResults.totalCount > 0) {
+                                        "মোট ${searchResults.totalCount}টি তথ্য পাওয়া গেছে (${searchResults.topics.size}টি বিষয়, ${searchResults.revisions.size}টি রিভিশন, ${searchResults.mcqs.size}টি MCQ)"
+                                    } else {
+                                        "কোনো ফলাফল পাওয়া যায়নি"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                )
+                            }
+                            TextButton(
+                                onClick = { viewModel.clearGlobalSearchQuery() },
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.primary
+                                )
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("মুছুন", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                // If No Results Found
+                if (searchResults.totalCount == 0) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(text = "🔎", fontSize = 36.sp)
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Text(
+                                    text = "\"$queryTrimmed\" সম্পর্কিত তথ্য মেলেনি",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "বানান সঠিক কিনা যাচাই করুন অথবা নিচের জনপ্রিয় কোনো আন্তর্জাতিক বিষয় বেছে নিন:",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.padding(horizontal = 4.dp)
+                                ) {
+                                    listOf("BRICS", "লেবানন", "আইএমএফ", "হরমুজ").forEach { sug ->
+                                        AssistChip(
+                                            onClick = { viewModel.setGlobalSearchQuery(sug) },
+                                            label = { Text(sug, fontSize = 11.sp) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 1. Matching Topics
+                if (searchResults.topics.isNotEmpty()) {
+                    item {
+                        SectionHeader(
+                            title = "🌍 বিষয়ভিত্তিক বিশ্লেষণ (${searchResults.topics.size}টি)",
+                            subtitle = "শিরোনামে ট্যাপ করে বিস্তারিত ৮ স্তরের বিশ্লেষণ পড়ুন",
+                            icon = Icons.Default.Public
+                        )
+                    }
+                    items(searchResults.topics, key = { "search_${it.id}" }) { topic ->
+                        val isExpanded = expandedTopicIds.contains(topic.id)
+                        val isSaved = savedTopicIds.contains(topic.id)
+                        TopicCard(
+                            topic = topic,
+                            isExpanded = isExpanded,
+                            onToggleExpand = { viewModel.toggleTopicExpansion(topic.id) },
+                            onBookmarkMcq = { mcq -> viewModel.toggleBookmark(mcq) },
+                            bookmarkedIds = bookmarkedIds,
+                            isSaved = isSaved,
+                            onToggleSave = { viewModel.toggleSaveTopic(topic, report.banglaDate) }
+                        )
+                    }
+                }
+
+                // 2. Matching Quick Revisions
+                if (searchResults.revisions.isNotEmpty()) {
+                    item {
+                        SectionHeader(
+                            title = "⚡ কুইক রিভিশন তথ্য (${searchResults.revisions.size}টি)",
+                            subtitle = "পরীক্ষায় সরাসরি কমন উপযোগী ওয়ান-লাইনার",
+                            icon = Icons.Default.Bolt
+                        )
+                    }
+                    items(searchResults.revisions, key = { "rev_${it.serial}" }) { rev ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = MaterialTheme.colorScheme.primaryContainer
+                                    ) {
+                                        Text(
+                                            text = "#${rev.serial} ${rev.category}",
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = rev.questionOrFact,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "উত্তর: ${rev.answer}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 3. Matching MCQs
+                if (searchResults.mcqs.isNotEmpty()) {
+                    item {
+                        SectionHeader(
+                            title = "📝 MCQ পরীক্ষা প্রশ্ন (${searchResults.mcqs.size}টি)",
+                            subtitle = "অনুসন্ধান ফলাফলে প্রাপ্ত প্রিলিমিনারি প্রশ্ন",
+                            icon = Icons.Default.Quiz
+                        )
+                    }
+                    items(searchResults.mcqs, key = { "mcq_${it.id}" }) { mcq ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Text(
+                                    text = "${mcq.questionNumber}. ${mcq.question}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                mcq.options.forEachIndexed { optIndex, optText ->
+                                    val isCorrect = optIndex == mcq.correctIndex
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = if (isCorrect) Color(0xFF2E7D32) else MaterialTheme.colorScheme.surfaceVariant,
+                                            modifier = Modifier.size(18.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = "${optIndex + 1}",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isCorrect) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = optText,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isCorrect) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isCorrect) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "ব্যাখ্যা: ${mcq.explanation}",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.outline,
+                                    lineHeight = 16.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 4. Matching Written & Viva questions
+                if (searchResults.writtenViva.isNotEmpty()) {
+                    item {
+                        SectionHeader(
+                            title = "✍️ লিখিত ও ভাইভা প্রস্তুতি (${searchResults.writtenViva.size}টি)",
+                            subtitle = "বিশ্লেষণধর্মী প্রশ্ন ও ভাইভা পরামর্শ",
+                            icon = Icons.Default.MenuBook
+                        )
+                    }
+                    items(searchResults.writtenViva, key = { "wv_${it.id}" }) { wv ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Text(
+                                    text = "ইস্যু: ${wv.issue}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "প্রশ্ন: ${wv.possibleQuestion}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                wv.keyPoints.forEach { kp ->
                                     Text(
-                                        text = "${index + 1}",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
+                                        text = "• $kp",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        lineHeight = 18.sp
+                                    )
+                                }
+                                if (wv.analyticalTip.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            text = "💡 ভাইভা টিপস: ${wv.analyticalTip}",
+                                            modifier = Modifier.padding(8.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+            } else {
+                // ==================== REGULAR DAILY VIEW MODE ====================
+                // 1. Bangladesh Standard Time (BST) Banner
+                item {
+                    BstDateBanner(
+                        report = report,
+                        onSwitchDateClick = onOpenDatePicker
+                    )
+                }
+
+                // 1.1 Visual Indicator: Content Successfully Synced & Available Offline
+                item {
+                    OfflineSyncStatusCard(
+                        syncState = syncState,
+                        reportDateLabel = report.banglaDate,
+                        onManualSync = { viewModel.triggerDailySync() }
+                    )
+                }
+
+                // 2. Daily Comparison / Continuity Card
+                item {
+                    DailyComparisonCard(dayComparison = report.dayComparison)
+                }
+
+                // 3. Top International Affairs Headlines of the Day
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color(0xFFE53935).copy(alpha = 0.15f),
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(text = "🔥", fontSize = 14.sp)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "আজকের প্রধান আন্তর্জাতিক ঘটনাবলি (Top Headlines)",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            report.topHeadlines.forEachIndexed { index, headline ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        modifier = Modifier.size(20.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = "${index + 1}",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = headline,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.weight(1f)
                                     )
                                 }
                             }
-                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                    }
+                }
+
+                // 4. Category Filter Chips
+                item {
+                    Column {
+                        SectionHeader(
+                            title = "🌍 বিস্তারিত বিষয়ভিত্তিক বিশ্লেষণ",
+                            subtitle = "BCS সিলেবাসের আলোকে ৮ স্তরের গভীর বিশ্লেষণ ও সম্ভাব্য প্রশ্নমালা",
+                            icon = Icons.Default.Public
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(categories) { cat ->
+                                FilterChip(
+                                    selected = selectedCategory == cat,
+                                    onClick = { viewModel.setCategoryFilter(cat) },
+                                    label = { Text(cat, fontSize = 12.sp) },
+                                    leadingIcon = if (selectedCategory == cat) {
+                                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                    } else null
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 5. Individual Topic Cards (with 8-part structured breakdown, tap-to-expand)
+                items(filteredTopics, key = { it.id }) { topic ->
+                    val isExpanded = expandedTopicIds.contains(topic.id)
+                    val isSaved = savedTopicIds.contains(topic.id)
+                    TopicCard(
+                        topic = topic,
+                        isExpanded = isExpanded,
+                        onToggleExpand = { viewModel.toggleTopicExpansion(topic.id) },
+                        onBookmarkMcq = { mcq -> viewModel.toggleBookmark(mcq) },
+                        bookmarkedIds = bookmarkedIds,
+                        isSaved = isSaved,
+                        onToggleSave = { viewModel.toggleSaveTopic(topic, report.banglaDate) }
+                    )
+                }
+
+                // 6. Cross-Topic Connections (🔗 আন্তঃসংযোগ)
+                item {
+                    CrossConnectionsCard(connections = report.crossConnections)
+                }
+
+                // 7. Overall Bangladesh Angle Summary (🇧🇩 বাংলাদেশ প্রেক্ষিত)
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                        ),
+                        border = CardDefaults.outlinedCardBorder().copy(width = 1.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(text = "🇧🇩", fontSize = 20.sp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "সার্বিক বাংলাদেশ পরিপ্রেক্ষিত (Strategic Takeaways)",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = headline,
+                                text = report.bangladeshAngleSummary,
                                 style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.weight(1f)
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                lineHeight = 22.sp
                             )
                         }
                     }
                 }
-            }
-        }
 
-        // 4. Category Filter Chips
-        item {
-            Column {
-                SectionHeader(
-                    title = "🌍 বিস্তারিত বিষয়ভিত্তিক বিশ্লেষণ",
-                    subtitle = "BCS সিলেবাসের আলোকে ৮ স্তরের গভীর বিশ্লেষণ ও সম্ভাব্য প্রশ্নমালা",
-                    icon = Icons.Default.Public
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(categories) { cat ->
-                        FilterChip(
-                            selected = selectedCategory == cat,
-                            onClick = { viewModel.setCategoryFilter(cat) },
-                            label = { Text(cat, fontSize = 12.sp) },
-                            leadingIcon = if (selectedCategory == cat) {
-                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                            } else null
-                        )
+                // 8. Call to Action: Take today's test
+                item {
+                    Button(
+                        onClick = onTakeTestClick,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .testTag("take_daily_test_button"),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.Quiz, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("আজকের বিষয়গুলোর ওপর MCQ পরীক্ষা দিন (${report.mcqTest.size}টি প্রশ্ন)", fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
+    }
+}
 
-        // 5. Individual Topic Cards (with 8-part structured breakdown)
-        items(filteredTopics, key = { it.id }) { topic ->
-            val isExpanded = expandedTopicIds.contains(topic.id)
-            val isSaved = savedTopicIds.contains(topic.id)
-            TopicCard(
-                topic = topic,
-                isExpanded = isExpanded,
-                onToggleExpand = { viewModel.toggleTopicExpansion(topic.id) },
-                onBookmarkMcq = { mcq -> viewModel.toggleBookmark(mcq) },
-                bookmarkedIds = bookmarkedIds,
-                isSaved = isSaved,
-                onToggleSave = { viewModel.toggleSaveTopic(topic, report.banglaDate) }
-            )
-        }
+data class GlobalSearchResultsHolder(
+    val query: String,
+    val topics: List<TopicAnalysis>,
+    val headlines: List<String>,
+    val revisions: List<QuickRevisionItem>,
+    val mcqs: List<McqQuestion>,
+    val writtenViva: List<WrittenVivaItem>
+) {
+    val totalCount: Int
+        get() = topics.size + headlines.size + revisions.size + mcqs.size + writtenViva.size
+}
 
-        // 6. Cross-Topic Connections (🔗 আন্তঃসংযোগ)
-        item {
-            CrossConnectionsCard(connections = report.crossConnections)
-        }
+@Composable
+fun GlobalSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onClearQuery: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val quickKeywords = listOf("BRICS", "লেবানন", "UNIFIL", "আইএমএফ", "হরমুজ প্রণালী", "CBAM শুল্ক", "উত্তর কোরিয়া", "ন্যাটো")
 
-        // 7. Overall Bangladesh Angle Summary (🇧🇩 বাংলাদেশ প্রেক্ষিত)
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                ),
-                border = CardDefaults.outlinedCardBorder().copy(width = 1.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(text = "🇧🇩", fontSize = 20.sp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "সার্বিক বাংলাদেশ পরিপ্রেক্ষিত (Strategic Takeaways)",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
+    Column(modifier = modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("global_search_input"),
+            placeholder = {
+                Text(
+                    text = "আন্তর্জাতিক বিষয়াবলি বা কি-ওয়ার্ড অনুসন্ধান করুন...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    fontSize = 13.sp
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "অনুসন্ধান",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            trailingIcon = {
+                if (query.isNotBlank()) {
+                    IconButton(
+                        onClick = onClearQuery,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "মুছুন",
+                            tint = MaterialTheme.colorScheme.outline
                         )
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+            )
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Quick Search Keyword Chips
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            item {
+                Text(
+                    text = "জনপ্রিয়:",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
+            items(quickKeywords) { keyword ->
+                val isSelected = query.equals(keyword, ignoreCase = true)
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    border = CardDefaults.outlinedCardBorder().copy(width = 0.5.dp),
+                    modifier = Modifier.clickable {
+                        if (isSelected) onClearQuery() else onQueryChange(keyword)
+                    }
+                ) {
                     Text(
-                        text = report.bangladeshAngleSummary,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        lineHeight = 22.sp
+                        text = keyword,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        fontSize = 11.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
-        }
-
-        // 8. Call to Action: Take today's test
-        item {
-            Button(
-                onClick = onTakeTestClick,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("take_daily_test_button"),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Icon(imageVector = Icons.Default.Quiz, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("আজকের বিষয়গুলোর ওপর MCQ পরীক্ষা দিন (${report.mcqTest.size}টি প্রশ্ন)", fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -352,6 +786,176 @@ fun DailyComparisonCard(dayComparison: DayComparison) {
 }
 
 @Composable
+fun OfflineSyncStatusCard(
+    syncState: com.example.data.sync.DailySyncState,
+    reportDateLabel: String,
+    onManualSync: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("offline_sync_status_card"),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (syncState.isSyncing) {
+                MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+            } else {
+                Color(0xFFE8F5E9)
+            }
+        ),
+        border = CardDefaults.outlinedCardBorder().copy(
+            brush = androidx.compose.ui.graphics.SolidColor(
+                if (syncState.isSyncing) MaterialTheme.colorScheme.tertiary else Color(0xFF81C784)
+            ),
+            width = 1.dp
+        )
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = if (syncState.isSyncing) MaterialTheme.colorScheme.primaryContainer else Color(0xFF2E7D32),
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (syncState.isSyncing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.CloudDone,
+                                    contentDescription = "অফলাইন সিঙ্ক সফল",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (syncState.isSyncing) "সিঙ্ক হচ্ছে..." else "কন্টেন্ট সফলভাবে সিঙ্ক সম্পন্ন",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (syncState.isSyncing) MaterialTheme.colorScheme.onTertiaryContainer else Color(0xFF1B5E20)
+                            )
+                            if (!syncState.isSyncing) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color(0xFF2E7D32).copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = "অফলাইন প্রস্তুত",
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFF1B5E20)
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            text = if (syncState.isSyncing) {
+                                syncState.progressMessage.ifBlank { "৪টি পত্রিকার খবর আপডেট হচ্ছে..." }
+                            } else {
+                                "ইন্টারনেট ছাড়াও পুরো সংস্করণ পড়ার জন্য ডিভাইসে সংরক্ষিত"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (syncState.isSyncing) MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f) else Color(0xFF2E7D32)
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onManualSync,
+                    enabled = !syncState.isSyncing,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "এখনই সিঙ্ক রিফ্রেশ করুন",
+                        tint = if (syncState.isSyncing) MaterialTheme.colorScheme.outline else Color(0xFF1B5E20),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            if (!syncState.isSyncing) {
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(color = Color(0xFFC8E6C9), thickness = 0.8.dp)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color.White.copy(alpha = 0.9f),
+                        border = CardDefaults.outlinedCardBorder().copy(width = 0.5.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(text = "📶 অফলাইন মোড", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1B5E20))
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color.White.copy(alpha = 0.9f),
+                        border = CardDefaults.outlinedCardBorder().copy(width = 0.5.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(text = "📰 ৪টি আন্তর্জাতিক পাতা", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1B5E20))
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color.White.copy(alpha = 0.9f),
+                        border = CardDefaults.outlinedCardBorder().copy(width = 0.5.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "⏱️ ${syncState.lastSyncFormattedBst.ifBlank { "আজ ০৬:০০ AM" }}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF1B5E20)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun TopicCard(
     topic: TopicAnalysis,
     isExpanded: Boolean,
@@ -369,18 +973,22 @@ fun TopicCard(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isExpanded) 3.dp else 1.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            // Header: Rank + Category + Title
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // Header: Rank + Category + Latest Tag + Save Action + Expand Icon
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    color = if (topic.importanceRank == 1) Color(0xFFD32F2F) else MaterialTheme.colorScheme.primary,
+                    contentColor = Color.White,
                     modifier = Modifier.size(28.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -392,7 +1000,23 @@ fun TopicCard(
                     }
                 }
 
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+
+                if (topic.importanceRank == 1) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color(0xFFFFEBEE)
+                    ) {
+                        Text(
+                            text = "⚡ সর্বশেষ (Latest)",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFC62828),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
 
                 Surface(
                     shape = RoundedCornerShape(6.dp),
@@ -435,16 +1059,26 @@ fun TopicCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // 🟦 Topic Title
-            Text(
-                text = "🟦 ${topic.title}",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.ExtraBold,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.clickable { onToggleExpand() }
-            )
+            // 🟦 Clickable Headline (Tapping headline expands into full article)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onToggleExpand() }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Text(
+                    text = "🟦 ${topic.title}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = if (isExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    lineHeight = 22.sp,
+                    modifier = Modifier.weight(1f)
+                )
+            }
 
             // Newspapers reported tag
             Spacer(modifier = Modifier.height(6.dp))
@@ -469,33 +1103,84 @@ fun TopicCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // ১. আজকের ঘটনা (Always visible summary)
-            Text(
-                text = "১. আজকের ঘটনা",
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = topic.todaysEvent,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                lineHeight = 20.sp
-            )
-
-            // YouTube Video Suggestion (ONLY if verified video exists)
-            if (topic.youtubeVideo != null) {
+            // When COLLAPSED: Show brief teaser and clean invitation to tap headline to expand
+            if (!isExpanded) {
                 Spacer(modifier = Modifier.height(10.dp))
-                YouTubeSuggestionCard(suggestion = topic.youtubeVideo)
+                Text(
+                    text = topic.todaysEvent,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    lineHeight = 20.sp,
+                    modifier = Modifier.clickable { onToggleExpand() }
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onToggleExpand() }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.MenuBook,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "হেডলাইনে ট্যাপ করে সম্পূর্ণ ৮ স্তরের বিশ্লেষণ পড়ুন",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.ExpandMore,
+                            contentDescription = "প্রসারিত করুন",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
             }
 
-            // Expandable Sections (২ to ৮)
+            // When EXPANDED: Show the COMPLETE 8-PART FULL ARTICLE
             AnimatedVisibility(visible = isExpanded) {
                 Column(modifier = Modifier.padding(top = 12.dp)) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // ১. আজকের ঘটনা
+                    Text(
+                        text = "১. আজকের ঘটনা",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = topic.todaysEvent,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        lineHeight = 22.sp
+                    )
+
+                    // YouTube Video Suggestion (ONLY if verified video exists)
+                    if (topic.youtubeVideo != null) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        YouTubeSuggestionCard(suggestion = topic.youtubeVideo)
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     // ২. কেন গুরুত্বপূর্ণ?
                     SubSectionItem(
@@ -535,6 +1220,18 @@ fun TopicCard(
                         bookmarkedIds = bookmarkedIds,
                         youtubeVideo = topic.youtubeVideo
                     )
+
+                    // Bottom collapse button
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = onToggleExpand,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.ExpandLess, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = "প্রতিবেদন সংক্ষেপ করুন", fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }

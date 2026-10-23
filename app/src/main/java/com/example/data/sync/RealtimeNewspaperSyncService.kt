@@ -8,10 +8,14 @@ import com.example.data.api.GeminiManager
 import com.example.data.time.BangladeshTimeHelper
 import com.example.model.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -25,8 +29,8 @@ class RealtimeNewspaperSyncService(private val context: Context) {
         context.getSharedPreferences("bcs_daily_sync_prefs", Context.MODE_PRIVATE)
 
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(3, TimeUnit.SECONDS)
         .build()
 
     private val _syncState = MutableStateFlow(loadInitialSyncState())
@@ -76,19 +80,20 @@ class RealtimeNewspaperSyncService(private val context: Context) {
      */
     fun isSyncDueToday(): Boolean {
         if (!_syncState.value.isAutoUpdateEnabled) return false
-        val todayKey = BangladeshTimeHelper.getTodayEditionKey()
-        val lastKey = prefs.getString(PREF_LAST_SYNC_DATE_KEY, "") ?: ""
-        val lastTimestamp = prefs.getLong(PREF_LAST_SYNC_TIMESTAMP, 0L)
         val now = System.currentTimeMillis()
+        val lastTimestamp = prefs.getLong(PREF_LAST_SYNC_TIMESTAMP, 0L)
 
-        // Fresh install / never synced -> sync immediately
-        if (lastKey.isEmpty()) {
-            return true
+        // Avoid hammering if an attempt was made within the last 3 minutes
+        if (now - lastTimestamp < 3 * 60 * 1000L) {
+            return false
         }
 
-        // Avoid hammering if an attempt was made within the last 5 minutes
-        if (now - lastTimestamp < 5 * 60 * 1000L) {
-            return false
+        val todayKey = BangladeshTimeHelper.getTodayEditionKey()
+        val lastKey = prefs.getString(PREF_LAST_SYNC_DATE_KEY, "") ?: ""
+
+        // Fresh install / never synced -> sync
+        if (lastKey.isEmpty()) {
+            return true
         }
 
         return todayKey != lastKey
@@ -109,64 +114,7 @@ class RealtimeNewspaperSyncService(private val context: Context) {
             if (!file.exists()) return null
             val jsonStr = file.readText()
             val jsonObj = JSONObject(jsonStr)
-
-            val id = jsonObj.optString("id")
-            val banglaDate = jsonObj.optString("banglaDate")
-            val banglaTime = jsonObj.optString("banglaTime")
-            val rawDateIso = jsonObj.optString("rawDateIso")
-            val heading = jsonObj.optString("heading")
-
-            val headlinesArr = jsonObj.optJSONArray("topHeadlines")
-            val topHeadlines = mutableListOf<String>()
-            if (headlinesArr != null) {
-                for (i in 0 until headlinesArr.length()) {
-                    topHeadlines.add(headlinesArr.getString(i))
-                }
-            }
-
-            // Sources
-            val sourcesArr = jsonObj.optJSONArray("sources")
-            val sources = mutableListOf<DailySource>()
-            if (sourcesArr != null) {
-                for (i in 0 until sourcesArr.length()) {
-                    val sObj = sourcesArr.getJSONObject(i)
-                    val articlesArr = sObj.optJSONArray("articles")
-                    val articles = mutableListOf<SourceArticle>()
-                    if (articlesArr != null) {
-                        for (j in 0 until articlesArr.length()) {
-                            val aObj = articlesArr.getJSONObject(j)
-                            articles.add(
-                                SourceArticle(
-                                    headline = aObj.optString("headline"),
-                                    topicMatched = aObj.optString("topicMatched"),
-                                    url = aObj.optString("url")
-                                )
-                            )
-                        }
-                    }
-                    sources.add(
-                        DailySource(
-                            newspaperName = sObj.optString("newspaperName"),
-                            englishName = sObj.optString("englishName"),
-                            section = sObj.optString("section"),
-                            articlesCovered = articles,
-                            hasContent = sObj.optBoolean("hasContent", true),
-                            note = sObj.optString("note")
-                        )
-                    )
-                }
-            }
-
-            val base = BcsDataSource.report16Oct2026
-            base.copy(
-                id = id.ifBlank { "live_${BangladeshTimeHelper.getTodayEditionKey()}" },
-                banglaDate = banglaDate.ifBlank { BangladeshTimeHelper.getFormattedBstDate() },
-                banglaTime = banglaTime.ifBlank { "০৬:০০ AM BST" },
-                rawDateIso = rawDateIso.ifBlank { BangladeshTimeHelper.getTodayEditionKey() },
-                heading = heading.ifBlank { "BCS International Affairs — $banglaDate" },
-                topHeadlines = if (topHeadlines.isNotEmpty()) topHeadlines else base.topHeadlines,
-                sources = if (sources.isNotEmpty()) sources else base.sources
-            )
+            DailyBcsOverhaulEngine.deserializeFromJson(jsonObj)
         } catch (e: Exception) {
             Log.w(TAG, "Error loading cached report from disk: ${e.message}")
             null
@@ -175,45 +123,10 @@ class RealtimeNewspaperSyncService(private val context: Context) {
 
     private fun saveReportToDisk(report: DailyReport) {
         try {
-            val jsonObj = JSONObject().apply {
-                put("id", report.id)
-                put("banglaDate", report.banglaDate)
-                put("banglaTime", report.banglaTime)
-                put("rawDateIso", report.rawDateIso)
-                put("heading", report.heading)
-
-                val hArr = JSONArray()
-                report.topHeadlines.forEach { hArr.put(it) }
-                put("topHeadlines", hArr)
-
-                val sArr = JSONArray()
-                report.sources.forEach { s ->
-                    val sObj = JSONObject().apply {
-                        put("newspaperName", s.newspaperName)
-                        put("englishName", s.englishName)
-                        put("section", s.section)
-                        put("hasContent", s.hasContent)
-                        put("note", s.note)
-                        val aArr = JSONArray()
-                        s.articlesCovered.forEach { a ->
-                            aArr.put(
-                                JSONObject().apply {
-                                    put("headline", a.headline)
-                                    put("topicMatched", a.topicMatched)
-                                    put("url", a.url)
-                                }
-                            )
-                        }
-                        put("articles", aArr)
-                    }
-                    sArr.put(sObj)
-                }
-                put("sources", sArr)
-            }
-
+            val jsonObj = DailyBcsOverhaulEngine.serializeToJson(report)
             val file = File(context.filesDir, CACHE_FILE_NAME)
             file.writeText(jsonObj.toString())
-            Log.i(TAG, "Successfully persisted daily report for ${report.banglaDate} to disk.")
+            Log.i(TAG, "Successfully persisted daily overhaul report for ${report.banglaDate} to disk.")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save daily report to disk: ${e.message}")
         }
@@ -227,35 +140,34 @@ class RealtimeNewspaperSyncService(private val context: Context) {
         sources: List<ManagedNewspaper>,
         customDateLabel: String? = null
     ): Result<DailyReport> = withContext(Dispatchers.IO) {
-        val now = BangladeshTimeHelper.nowBst()
+        val now = BangladeshTimeHelper.nowCalendar()
         val dateLabel = customDateLabel ?: BangladeshTimeHelper.getFormattedBstDate(now)
         val timeLabel = BangladeshTimeHelper.getFormattedBstTime(now)
 
         _syncState.value = _syncState.value.copy(
             isSyncing = true,
-            progressMessage = "৪টি জাতীয় দৈনিক (প্রথম আলো, দ্য ডেইলি স্টার, বণিক বার্তা, ঢাকা ট্রিবিউন)-এর রিয়েল-টাইম তথ্য সংগ্রহ শুরু হচ্ছে..."
+            progressMessage = "৪টি জাতীয় দৈনিকের আন্তর্জাতিক পাতা দ্রুত স্ক্যান করা হচ্ছে..."
         )
 
-        val updatedNewspaperStatuses = mutableListOf<NewspaperSyncInfo>()
+        var finalReport: DailyReport? = null
 
-        // 1. Fetch live headlines for active sources
-        val activeSources = if (sources.isEmpty()) ManagedNewspaper.defaultSources else sources.filter { it.isActive }
-        val headlinesMap = mutableMapOf<String, List<String>>()
+        try {
+            val activeSources = if (sources.isEmpty()) ManagedNewspaper.defaultSources else sources.filter { it.isActive }
 
-        for (source in activeSources) {
-            _syncState.value = _syncState.value.copy(
-                progressMessage = "${source.name}-এর আন্তর্জাতিক পাতা ও সর্বশেষ খবর স্ক্যান করা হচ্ছে..."
-            )
-
-            val headlines = fetchHeadlinesForSource(source)
-            if (headlines.isNotEmpty()) {
-                headlinesMap[source.id] = headlines
+            // 1. Fetch live headlines for active sources concurrently in parallel with strict timeout
+            val headlinePairs: List<Pair<String, List<String>>> = coroutineScope {
+                activeSources.map { source ->
+                    async {
+                        val headlines = fetchHeadlinesForSource(source)
+                        source.id to headlines
+                    }
+                }.awaitAll()
             }
 
-            val articleCount = headlines.size.coerceAtLeast(4)
-            val statusMsg = "${articleCount}টি আন্তর্জাতিক সংবাদ সংগৃহীত"
-
-            updatedNewspaperStatuses.add(
+            val headlinesMap: Map<String, List<String>> = headlinePairs.toMap()
+            val updatedNewspaperStatuses = activeSources.map { source ->
+                val headlines = headlinesMap[source.id] ?: emptyList()
+                val articleCount = headlines.size.coerceAtLeast(4)
                 NewspaperSyncInfo(
                     id = source.id,
                     name = source.name,
@@ -263,99 +175,108 @@ class RealtimeNewspaperSyncService(private val context: Context) {
                     section = source.section,
                     webUrl = source.webUrl,
                     rssUrl = source.rssUrl,
-                    status = statusMsg,
+                    status = "${articleCount}টি আন্তর্জাতিক সংবাদ সংগৃহীত",
                     articlesCount = articleCount,
                     lastUpdatedBst = timeLabel,
                     isSuccess = true
                 )
-            )
-        }
-
-        // 2. Synthesize complete BCS structured report via Gemini search grounding
-        _syncState.value = _syncState.value.copy(
-            progressMessage = "জেমিনি এআই ইঞ্জিনের মাধ্যমে ৪টি পত্রিকার খবরের ৮ স্তরের বিসিএস বিশ্লেষণ তৈরি হচ্ছে..."
-        )
-
-        val sourcesPromptSummary = activeSources.joinToString("\n") { s ->
-            val customHeadlines = headlinesMap[s.id]?.take(3)?.joinToString(" | ") ?: ""
-            "• ${s.name} (${s.englishName}) [${s.webUrl}]: ${if (customHeadlines.isNotBlank()) "সর্বশেষ খবর: $customHeadlines" else s.section}"
-        }
-
-        val prompt = """
-            তারিখ: $dateLabel
-            সময়: সকাল ০৬:০০ AM BST (বাংলাদেশ মান সময়)
-            
-            সকাল ৬:০০ টার দৈনিক সংস্করণের জন্য বাংলাদেশের শীর্ষ ৪টি জাতীয় দৈনিকের আন্তর্জাতিক পাতার রিয়েল-টাইম সংবাদ বিশ্লেষণ করুন:
-            $sourcesPromptSummary
-            
-            BCS Preliminary & Written সিলেবাস অনুসারে তৈরি করুন:
-            ১. তারিখ ও সময় (BST, UTC+6)
-            ২. আজকের শীর্ষ খবর (Top Headlines from 4 newspapers)
-            ৩. ৫টি গুরুত্বপূর্ণ টপিক (১. আজকের ঘটনা, ২. কেন গুরুত্বপূর্ণ?, ৩. পটভূমি, ৪. গুরুত্বপূর্ণ ব্যক্তি ও দেশ, ৫. গুরুত্বপূর্ণ তথ্য, ৬. বাংলাদেশের জন্য প্রাসঙ্গিকতা, ৭. BCS-এর জন্য কী পড়বেন?, ৮. সম্ভাব্য BCS প্রশ্ন)
-            ৪. আন্তঃসংযোগ (Cross-topic connections)
-            ৫. আজকের BCS Quick Revision (২০টি ওয়ান-লাইনার)
-            ৬. আজকের MCQ টেস্ট (১০টি প্রশ্ন + ৪টি অপশন + সঠিক উত্তর ও ব্যাখ্যা)
-            ৭. লিখিত ও ভাইভা দৃষ্টিকোণ (Written & Viva angle)
-            ৮. ব্যবহৃত ৪টি পত্রিকার স্বচ্ছতা ও কভারেজ সারাংশ
-        """.trimIndent()
-
-        var generatedReport: DailyReport? = null
-
-        try {
-            val geminiResult = GeminiManager.generateDailyBcsAnalysis(prompt)
-            if (geminiResult.isSuccess) {
-                val rawText = geminiResult.getOrNull() ?: ""
-                Log.d(TAG, "Gemini generated ${rawText.length} characters of daily synthesis")
-                generatedReport = createLiveDailyReport(
-                    dateLabel = dateLabel,
-                    timeLabel = "০৬:০০ AM BST",
-                    activeSources = activeSources,
-                    rawAnalysis = rawText,
-                    headlinesMap = headlinesMap
-                )
-            } else {
-                Log.w(TAG, "Gemini online synthesis unavailable. Using live newspaper headlines and verified syllabus model.")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Gemini daily synthesis returned: ${e.message}. Using verified daily bulletin.")
-        }
 
-        // If Gemini quota reached or offline, seamlessly build live daily bulletin with today's date & live headlines
-        if (generatedReport == null) {
-            generatedReport = createLiveDailyReport(
+            _syncState.value = _syncState.value.copy(
+                progressMessage = "আজকের সকাল ৬:০০ AM সংস্করণ প্রস্তুত করা হচ্ছে..."
+            )
+
+            // 2. Synthesize complete BCS structured report via Gemini search grounding (with strict 8s timeout)
+            var rawSynthesis: String? = null
+            try {
+                withTimeoutOrNull(8000L) {
+                    val sourcesPromptSummary = activeSources.joinToString("\n") { s ->
+                        val customHeadlines = headlinesMap[s.id]?.take(2)?.joinToString(" | ") ?: ""
+                        "• ${s.name} (${s.englishName}) [${s.webUrl}]: ${if (customHeadlines.isNotBlank()) "সর্বশেষ খবর: $customHeadlines" else s.section}"
+                    }
+
+                    val prompt = """
+                        তারিখ: $dateLabel
+                        সময়: সকাল ০৬:০০ AM BST (বাংলাদেশ মান সময়)
+                        ৪টি জাতীয় দৈনিকের আন্তর্জাতিক পাতার সংবাদ:
+                        $sourcesPromptSummary
+                        
+                        BCS Preliminary & Written সিলেবাস অনুসারে ৫টি টপিক, আন্তঃসংযোগ, কুইক রিভিশন এবং MCQ টেস্ট তৈরি করুন।
+                    """.trimIndent()
+
+                    val geminiResult = GeminiManager.generateDailyBcsAnalysis(prompt)
+                    if (geminiResult.isSuccess) {
+                        rawSynthesis = geminiResult.getOrNull()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Gemini online synthesis skipped: ${e.message}")
+            }
+
+            val editionKey = BangladeshTimeHelper.getTodayEditionKey()
+
+            // Complete overhaul of ALL sections (Bulletin, Revision, MCQ Test, Written & Viva)
+            finalReport = DailyBcsOverhaulEngine.buildFullOverhaulReport(
                 dateLabel = dateLabel,
                 timeLabel = "০৬:০০ AM BST",
+                editionKey = editionKey,
                 activeSources = activeSources,
-                rawAnalysis = null,
-                headlinesMap = headlinesMap
+                headlinesMap = headlinesMap,
+                geminiRawText = rawSynthesis
+            )
+
+            cachedReport = finalReport
+            saveReportToDisk(finalReport)
+
+            // Save last sync info so future checks know today's edition is completed
+            val nowMillis = System.currentTimeMillis()
+            val formattedSyncTime = "$dateLabel, ০৬:০০ AM BST"
+
+            prefs.edit()
+                .putLong(PREF_LAST_SYNC_TIMESTAMP, nowMillis)
+                .putString(PREF_LAST_SYNC_FORMATTED, formattedSyncTime)
+                .putString(PREF_LAST_SYNC_DATE_KEY, editionKey)
+                .apply()
+
+            _syncState.value = _syncState.value.copy(
+                isSyncing = false,
+                lastSyncTimestamp = nowMillis,
+                lastSyncFormattedBst = formattedSyncTime,
+                lastSyncDateKey = editionKey,
+                countdownText = BangladeshTimeHelper.getCountdownToNext6AmBst(),
+                progressMessage = "সকাল ৬:০০ AM সংস্করণ প্রস্তুত রয়েছে!",
+                newspaperStatuses = updatedNewspaperStatuses
+            )
+
+            Result.success(finalReport)
+        } catch (e: Exception) {
+            Log.e(TAG, "Daily sync encountered exception: ${e.message}", e)
+            val editionKey = BangladeshTimeHelper.getTodayEditionKey()
+            val fallback = finalReport ?: DailyBcsOverhaulEngine.buildFullOverhaulReport(
+                dateLabel = dateLabel,
+                timeLabel = "০৬:০০ AM BST",
+                editionKey = editionKey,
+                activeSources = ManagedNewspaper.defaultSources,
+                headlinesMap = emptyMap(),
+                geminiRawText = null
+            )
+            cachedReport = fallback
+            saveReportToDisk(fallback)
+
+            val nowMillis = System.currentTimeMillis()
+            prefs.edit()
+                .putLong(PREF_LAST_SYNC_TIMESTAMP, nowMillis)
+                .putString(PREF_LAST_SYNC_DATE_KEY, editionKey)
+                .apply()
+
+            Result.success(fallback)
+        } finally {
+            _syncState.value = _syncState.value.copy(
+                isSyncing = false,
+                countdownText = BangladeshTimeHelper.getCountdownToNext6AmBst(),
+                progressMessage = "সকাল ৬:০০ AM সংস্করণ প্রস্তুত রয়েছে!"
             )
         }
-
-        cachedReport = generatedReport
-        saveReportToDisk(generatedReport)
-
-        // Save last sync info
-        val nowMillis = System.currentTimeMillis()
-        val editionKey = BangladeshTimeHelper.getTodayEditionKey()
-        val formattedSyncTime = "$dateLabel, ০৬:০০ AM BST"
-
-        prefs.edit()
-            .putLong(PREF_LAST_SYNC_TIMESTAMP, nowMillis)
-            .putString(PREF_LAST_SYNC_FORMATTED, formattedSyncTime)
-            .putString(PREF_LAST_SYNC_DATE_KEY, editionKey)
-            .apply()
-
-        _syncState.value = _syncState.value.copy(
-            isSyncing = false,
-            lastSyncTimestamp = nowMillis,
-            lastSyncFormattedBst = formattedSyncTime,
-            lastSyncDateKey = editionKey,
-            countdownText = BangladeshTimeHelper.getCountdownToNext6AmBst(),
-            progressMessage = "সকাল ৬:০০ AM সংস্করণ প্রস্তুত রয়েছে!",
-            newspaperStatuses = updatedNewspaperStatuses
-        )
-
-        Result.success(generatedReport)
     }
 
     private fun fetchHeadlinesForSource(source: ManagedNewspaper): List<String> {
@@ -376,8 +297,10 @@ class RealtimeNewspaperSyncService(private val context: Context) {
                     for (match in titleRegex.findAll(xml)) {
                         val title = (match.groups[1]?.value ?: match.groups[2]?.value)?.trim() ?: ""
                         if (title.isNotBlank() && !title.contains("Feed") && !title.contains("Prothom Alo") && !title.contains("Daily Star") && !title.contains("RSS")) {
-                            titles.add(title)
-                            if (titles.size >= 8) break
+                            if (DailyBcsOverhaulEngine.isInternationalAffairsHeadline(title)) {
+                                titles.add(title)
+                                if (titles.size >= 8) break
+                            }
                         }
                     }
                 }
@@ -402,8 +325,10 @@ class RealtimeNewspaperSyncService(private val context: Context) {
                         val rawTitle = match.groups[1]?.value ?: ""
                         val cleaned = rawTitle.replace(Regex("<[^>]*>"), "").replace("&quot;", "\"").replace("&amp;", "&").trim()
                         if (cleaned.length in 12..180 && !cleaned.contains("Facebook") && !cleaned.contains("Subscribe")) {
-                            titles.add(cleaned)
-                            if (titles.size >= 6) break
+                            if (DailyBcsOverhaulEngine.isInternationalAffairsHeadline(cleaned)) {
+                                titles.add(cleaned)
+                                if (titles.size >= 6) break
+                            }
                         }
                     }
                 }
@@ -451,58 +376,6 @@ class RealtimeNewspaperSyncService(private val context: Context) {
                 "বৈশ্বিক অর্থনীতি, বাণিজ্য নীতি ও জ্বালানি নিরাপত্তা বিশ্লেষণ"
             )
         }
-    }
-
-    private fun createLiveDailyReport(
-        dateLabel: String,
-        timeLabel: String,
-        activeSources: List<ManagedNewspaper>,
-        rawAnalysis: String?,
-        headlinesMap: Map<String, List<String>>
-    ): DailyReport {
-        val todayKey = BangladeshTimeHelper.getTodayEditionKey()
-        val baseReport = BcsDataSource.report16Oct2026
-
-        val dynamicSources = activeSources.map { s ->
-            val articles = headlinesMap[s.id]?.map { h ->
-                SourceArticle(headline = h, topicMatched = "আন্তর্জাতিক ঘটনাপ্রবাহ", url = s.webUrl)
-            } ?: listOf(
-                SourceArticle(headline = "${s.name}-এর আন্তর্জাতিক পাতার প্রধান খবর", topicMatched = "ভূ-রাজনীতি", url = s.webUrl)
-            )
-
-            DailySource(
-                newspaperName = s.name,
-                englishName = s.englishName,
-                section = s.section,
-                articlesCovered = articles,
-                hasContent = true,
-                note = "রিয়েল-টাইম সকাল ৬:০০ AM BST সংস্করণ থেকে যাচাইকৃত"
-            )
-        }
-
-        val allHeadlines = headlinesMap.values.flatten().distinct()
-        val topHeadlines = if (allHeadlines.isNotEmpty()) {
-            allHeadlines.take(6)
-        } else {
-            listOf(
-                "লেবানন সীমান্তে UNIFIL ঘাঁটিতে গুলিবর্ষণ ও জাতিসংঘ নিরাপত্তা পরিষদের জরুরি অধিবেশন আহ্বান",
-                "১৬তম ব্রিকস (BRICS) শীর্ষ সম্মেলনে সদস্য দেশসমূহের বিকল্প বাণিজ্য মুদ্রা ও লাদাখ সীমান্ত চুক্তি",
-                "আইএমএফ-এর বৈশ্বিক অর্থনৈতিক পূর্বাভাস (WEO Report): প্রবৃদ্ধি ধীরগতির ইঙ্গিত ও মূল্যস্ফীতি নিয়ন্ত্রণ",
-                "উত্তর কোরিয়ার পার্লামেন্টে সংবিধান সংশোধন: দক্ষিণ কোরিয়াকে আনুষ্ঠানিকভাবে 'শত্রু রাষ্ট্র' ঘোষণা",
-                "ইউরোপীয় ইউনিয়নের কার্বন সীমান্ত সমন্বয় ব্যবস্থা (CBAM) ও বাংলাদেশের তৈরি পোশাক রপ্তানি ঝুঁকি",
-                "লোহিত সাগর ও বাব-এল-মান্দেব প্রণালীতে নৌ-নিরাপত্তা সংকট: সুয়েজ খালের রাজস্ব হ্রাস"
-            )
-        }
-
-        return baseReport.copy(
-            id = "live_$todayKey",
-            banglaDate = dateLabel,
-            banglaTime = timeLabel,
-            rawDateIso = todayKey,
-            heading = "BCS International Affairs — $dateLabel (সকাল ৬:০০ BST সংস্করণ)",
-            topHeadlines = topHeadlines,
-            sources = dynamicSources
-        )
     }
 
     companion object {

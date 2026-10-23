@@ -1,34 +1,42 @@
 package com.example.data.time
 
 import com.example.data.BcsDataSource
-import java.time.Duration
-import java.time.ZoneId
-import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Utility helper for managing Bangladesh Standard Time (BST, UTC+6)
  * and scheduling daily 6:00 AM automated updates for the 4 national newspapers.
+ * Compatible with all Android API levels (API 24+ without desugaring requirements).
  */
 object BangladeshTimeHelper {
 
-    val BST_ZONE_ID: ZoneId = ZoneId.of("Asia/Dhaka")
+    val BST_TIME_ZONE: TimeZone = TimeZone.getTimeZone("GMT+6")
 
     /**
      * Current time in Bangladesh (BST, UTC+6)
      */
-    fun nowBst(): ZonedDateTime {
-        return ZonedDateTime.now(BST_ZONE_ID)
+    fun nowBst(): java.time.ZonedDateTime {
+        return java.time.ZonedDateTime.now(java.time.ZoneId.of("Asia/Dhaka"))
+    }
+
+    /**
+     * Current calendar set to Bangladesh Time (BST, UTC+6)
+     */
+    fun nowCalendar(): Calendar {
+        return Calendar.getInstance(BST_TIME_ZONE)
     }
 
     /**
      * Returns true if current time is past 6:00 AM BST today
      */
     fun isPastToday6AmBst(): Boolean {
-        val now = nowBst()
-        val today6Am = now.withHour(6).withMinute(0).withSecond(0).withNano(0)
-        return now.isAfter(today6Am)
+        val now = nowCalendar()
+        val hour = now.get(Calendar.HOUR_OF_DAY)
+        return hour >= 6
     }
 
     /**
@@ -37,14 +45,20 @@ object BangladeshTimeHelper {
      * If now is 7:00 AM, delay is 23 hours (tomorrow's 6:00 AM).
      */
     fun getMillisUntilNext6AmBst(): Long {
-        val now = nowBst()
-        var target6Am = now.withHour(6).withMinute(0).withSecond(0).withNano(0)
-        if (!now.isBefore(target6Am)) {
-            // Already past or exactly 6 AM today -> target tomorrow's 6 AM
-            target6Am = target6Am.plusDays(1)
+        val now = nowCalendar()
+        val nowMillis = now.timeInMillis
+
+        val target = Calendar.getInstance(BST_TIME_ZONE).apply {
+            set(Calendar.HOUR_OF_DAY, 6)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            if (timeInMillis <= nowMillis) {
+                add(Calendar.DAY_OF_YEAR, 1)
+            }
         }
-        val duration = Duration.between(now, target6Am)
-        return duration.toMillis().coerceAtLeast(1000L)
+        val diff = target.timeInMillis - nowMillis
+        return diff.coerceAtLeast(1000L)
     }
 
     /**
@@ -70,22 +84,22 @@ object BangladeshTimeHelper {
     /**
      * Returns formatted current date in Bangla (e.g. "১৭ অক্টোবর ২০২৬")
      */
-    fun getFormattedBstDate(zonedDateTime: ZonedDateTime = nowBst()): String {
-        val day = BcsDataSource.convertToBanglaNumber(zonedDateTime.dayOfMonth.toString())
-        val year = BcsDataSource.convertToBanglaNumber(zonedDateTime.year.toString())
-        val monthBangla = when (zonedDateTime.monthValue) {
-            1 -> "জানুয়ারি"
-            2 -> "ফেব্রুয়ারি"
-            3 -> "মার্চ"
-            4 -> "এপ্রিল"
-            5 -> "মে"
-            6 -> "জুন"
-            7 -> "জুলাই"
-            8 -> "আগস্ট"
-            9 -> "সেপ্টেম্বর"
-            10 -> "অক্টোবর"
-            11 -> "নভেম্বর"
-            12 -> "ডিসেম্বর"
+    fun getFormattedBstDate(calendar: Calendar = nowCalendar()): String {
+        val day = BcsDataSource.convertToBanglaNumber(calendar.get(Calendar.DAY_OF_MONTH).toString())
+        val year = BcsDataSource.convertToBanglaNumber(calendar.get(Calendar.YEAR).toString())
+        val monthBangla = when (calendar.get(Calendar.MONTH)) {
+            Calendar.JANUARY -> "জানুয়ারি"
+            Calendar.FEBRUARY -> "ফেব্রুয়ারি"
+            Calendar.MARCH -> "মার্চ"
+            Calendar.APRIL -> "এপ্রিল"
+            Calendar.MAY -> "মে"
+            Calendar.JUNE -> "জুন"
+            Calendar.JULY -> "জুলাই"
+            Calendar.AUGUST -> "আগস্ট"
+            Calendar.SEPTEMBER -> "সেপ্টেম্বর"
+            Calendar.OCTOBER -> "অক্টোবর"
+            Calendar.NOVEMBER -> "নভেম্বর"
+            Calendar.DECEMBER -> "ডিসেম্বর"
             else -> ""
         }
         return "$day $monthBangla $year"
@@ -94,27 +108,34 @@ object BangladeshTimeHelper {
     /**
      * Returns formatted current time in Bangla (e.g. "০৬:০০ AM BST")
      */
-    fun getFormattedBstTime(zonedDateTime: ZonedDateTime = nowBst()): String {
-        val hour = zonedDateTime.hour
-        val minute = zonedDateTime.minute
-        val amPm = if (hour < 12) "AM" else "PM"
-        val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
+    fun getFormattedBstTime(calendar: Calendar = nowCalendar()): String {
+        val hour24 = calendar.get(Calendar.HOUR_OF_DAY)
+        val minute = calendar.get(Calendar.MINUTE)
+        val amPm = if (hour24 < 12) "AM" else "PM"
+        val displayHour = when {
+            hour24 == 0 -> 12
+            hour24 > 12 -> hour24 - 12
+            else -> hour24
+        }
 
         val hStr = String.format(Locale.US, "%02d", displayHour)
         val mStr = String.format(Locale.US, "%02d", minute)
 
-        val banglaTime = "${BcsDataSource.convertToBanglaNumber(hStr)}:${BcsDataSource.convertToBanglaNumber(mStr)} $amPm BST"
-        return banglaTime
+        return "${BcsDataSource.convertToBanglaNumber(hStr)}:${BcsDataSource.convertToBanglaNumber(mStr)} $amPm BST"
     }
 
     /**
-     * Unique key for a daily edition (e.g. "2026-10-17_06:00")
+     * Unique key for a daily edition (e.g. "2026-10-17")
      */
     fun getTodayEditionKey(): String {
-        val now = nowBst()
+        val calendar = nowCalendar()
         // If before 6 AM, edition is still yesterday's date until 6 AM hits
-        val effectiveDate = if (now.hour < 6) now.minusDays(1) else now
-        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.US)
-        return effectiveDate.format(formatter)
+        if (calendar.get(Calendar.HOUR_OF_DAY) < 6) {
+            calendar.add(Calendar.DAY_OF_YEAR, -1)
+        }
+        val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            timeZone = BST_TIME_ZONE
+        }
+        return formatter.format(calendar.time)
     }
 }
