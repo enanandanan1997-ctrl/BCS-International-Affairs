@@ -4,12 +4,13 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.BcsDataSource
-import com.example.data.local.AppDatabase
-import com.example.data.local.SavedNewsTopic
+import com.example.data.local.BcsDatabase
 import com.example.data.local.SavedTopicEntity
+import com.example.data.time.BangladeshTimeHelper
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -23,11 +24,31 @@ class ExampleRobolectricTest {
     fun `read string from context`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
-        assertEquals("BCS আন্তর্জাতিক", appName)
+        assertEquals("BCS Daily Digest", appName)
     }
 
     @Test
-    fun `test saved topic entity conversion with robolectric`() {
+    fun `test bangladesh time helper and dynamic report`() {
+        val dateStr = BangladeshTimeHelper.getFormattedBstDate()
+        assertTrue(dateStr.isNotBlank())
+
+        val timeStr = BangladeshTimeHelper.getFormattedBstTime()
+        assertTrue(timeStr.contains("BST"))
+
+        val report = BcsDataSource.generateDynamicTodayReport()
+        assertNotNull(report)
+        assertEquals(dateStr, report.banglaDate)
+        assertEquals(4, report.sources.size)
+    }
+
+    @Test
+    fun `test saved topic entity conversion and room operations`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, BcsDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val dao = db.bcsDao()
+
         val firstTopic = BcsDataSource.report16Oct2026.topics.first()
         val entity = SavedTopicEntity.fromTopicAnalysis(firstTopic, "১৬ অক্টোবর ২০২৬")
 
@@ -44,32 +65,10 @@ class ExampleRobolectricTest {
 
         val parsedEntities = entity.parseEntities()
         assertEquals(firstTopic.importantEntities.persons.size, parsedEntities.persons.size)
-    }
 
-    @Test
-    fun `test AppDatabase and SavedNewsDao operations`() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
-        val dao = db.savedNewsDao()
-
-        val topic = SavedNewsTopic(
-            id = "news_01",
-            title = "ব্রিকস শীর্ষ সম্মেলন ও ভারত-চীন সমঝোতা",
-            content = "লাদাখ সীমান্তে টহল সমঝোতা ও বৈশ্বিক বহুমুখী বিশ্বব্যবস্থা।",
-            date = "১৬ অক্টোবর ২০২৬",
-            source = "প্রথম আলো & The Daily Star",
-            isAvailableOffline = true
-        )
-
-        dao.insertSavedNewsTopic(topic)
-
-        val retrieved = dao.getSavedNewsTopicById("news_01")
-        assertNotNull(retrieved)
-        assertEquals("news_01", retrieved?.id)
-        assertEquals("ব্রিকস শীর্ষ সম্মেলন ও ভারত-চীন সমঝোতা", retrieved?.title)
-        assertEquals(true, retrieved?.isAvailableOffline)
+        dao.insertSavedTopic(entity)
+        val isSaved = dao.isTopicSaved(firstTopic.id)
+        assertTrue(isSaved)
 
         db.close()
     }

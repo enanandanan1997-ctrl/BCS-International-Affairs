@@ -55,22 +55,12 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun testSavedNewsTopicEntity() {
-        val newsTopic = com.example.data.local.SavedNewsTopic(
-            id = "topic_101",
-            title = "লেবাননে UNIFIL শান্তিরক্ষী মিশন ও রেজোলিউশন ১৭০১",
-            content = "দক্ষিণ লেবাননে নিয়োজিত জাতিসংঘের শান্তিরক্ষী বাহিনীর নিরাপত্তা ও ব্লু লাইন বিশ্লেষণ।",
-            date = "১৬ অক্টোবর ২০২৬",
-            source = "প্রথম আলো",
-            isAvailableOffline = true
-        )
-
-        assertEquals("topic_101", newsTopic.id)
-        assertEquals("লেবাননে UNIFIL শান্তিরক্ষী মিশন ও রেজোলিউশন ১৭০১", newsTopic.title)
-        assertTrue(newsTopic.content.isNotEmpty())
-        assertEquals("১৬ অক্টোবর ২০২৬", newsTopic.date)
-        assertEquals("প্রথম আলো", newsTopic.source)
-        assertTrue(newsTopic.isAvailableOffline)
+    fun testTopicAnalysisModel() {
+        val topic = BcsDataSource.report16Oct2026.topics.first()
+        assertEquals("t1", topic.id)
+        assertTrue(topic.title.contains("UNIFIL"))
+        assertTrue(topic.todaysEvent.isNotEmpty())
+        assertEquals(1, topic.importanceRank)
     }
 
     @Test

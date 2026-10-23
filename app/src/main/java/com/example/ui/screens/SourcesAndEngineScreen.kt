@@ -39,7 +39,7 @@ fun SourcesAndEngineScreen(
     val generatedOutput by viewModel.generatedRawOutput.collectAsState()
     val syncState by viewModel.syncState.collectAsState()
 
-    var customDateInput by remember { mutableStateOf("১৬ অক্টোবর ২০২৬") }
+    var customDateInput by remember { mutableStateOf(BangladeshTimeHelper.getFormattedBstDate()) }
     var showEngineDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {

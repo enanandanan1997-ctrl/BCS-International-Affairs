@@ -1,46 +1,22 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoStories
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.DownloadDone
-import androidx.compose.material.icons.filled.OfflinePin
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.local.SavedNewsTopic
+import com.example.data.local.SavedTopicEntity
 import com.example.ui.viewmodel.BcsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -50,7 +26,7 @@ fun OfflineSavedTopicsScreen(
     modifier: Modifier = Modifier
 ) {
     val savedTopics by viewModel.savedTopics.collectAsState()
-    val allTopics = viewModel.allTopics
+    var expandedTopicId by remember { mutableStateOf<String?>(null) }
 
     Column(modifier = modifier.fillMaxSize()) {
         TopAppBar(
@@ -111,15 +87,14 @@ fun OfflineSavedTopicsScreen(
                 contentPadding = PaddingValues(vertical = 12.dp)
             ) {
                 items(savedTopics, key = { it.id }) { savedItem ->
-                    SavedTopicCardItem(
-                        savedTopic = savedItem,
-                        onOpenReading = {
-                            val fullTopic = allTopics.find { it.title == savedItem.title }
-                            if (fullTopic != null) {
-                                viewModel.openReadingMode(fullTopic)
-                            }
+                    SavedTopicCard(
+                        topic = savedItem,
+                        isExpanded = expandedTopicId == savedItem.id,
+                        onToggleExpand = {
+                            expandedTopicId = if (expandedTopicId == savedItem.id) null else savedItem.id
                         },
-                        onDelete = { viewModel.deleteSavedEntity(savedItem) }
+                        onDelete = { viewModel.removeSavedTopic(savedItem.id) },
+                        onSaveNote = { note -> viewModel.updateSavedTopicNote(savedItem.id, note) }
                     )
                 }
             }
@@ -128,15 +103,20 @@ fun OfflineSavedTopicsScreen(
 }
 
 @Composable
-fun SavedTopicCardItem(
-    savedTopic: SavedNewsTopic,
-    onOpenReading: () -> Unit,
-    onDelete: () -> Unit
+fun SavedTopicCard(
+    topic: SavedTopicEntity,
+    isExpanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onDelete: () -> Unit,
+    onSaveNote: (String) -> Unit
 ) {
+    var isEditingNote by remember { mutableStateOf(false) }
+    var noteText by remember(topic.userNote) { mutableStateOf(topic.userNote) }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("saved_topic_card_${savedTopic.id}"),
+            .testTag("saved_topic_card_${topic.id}"),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer
@@ -174,7 +154,7 @@ fun SavedTopicCardItem(
 
                 IconButton(
                     onClick = onDelete,
-                    modifier = Modifier.testTag("delete_saved_${savedTopic.id}")
+                    modifier = Modifier.testTag("delete_saved_${topic.id}")
                 ) {
                     Icon(
                         imageVector = Icons.Default.DeleteOutline,
@@ -187,7 +167,7 @@ fun SavedTopicCardItem(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = savedTopic.title,
+                text = topic.title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -195,23 +175,155 @@ fun SavedTopicCardItem(
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "${savedTopic.date} • ${savedTopic.source}",
+                text = "${topic.sourceDateLabel} • ${topic.category} • ${topic.reportedBy}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             Button(
-                onClick = onOpenReading,
+                onClick = onToggleExpand,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("read_saved_btn_${savedTopic.id}"),
+                    .testTag("read_saved_btn_${topic.id}"),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Icon(imageVector = Icons.Default.AutoStories, contentDescription = null)
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.AutoStories,
+                    contentDescription = null
+                )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("পঠন মোডে পড়ুন", fontWeight = FontWeight.Bold)
+                Text(if (isExpanded) "সংক্ষেপ করুন" else "সম্পূর্ণ অফলাইন বিশ্লেষণ পড়ুন", fontWeight = FontWeight.Bold)
+            }
+
+            AnimatedVisibility(visible = isExpanded) {
+                Column(modifier = Modifier.padding(top = 16.dp)) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (topic.todaysEvent.isNotBlank()) {
+                        Text(
+                            text = "১. মূল ঘটনা:",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = topic.todaysEvent,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp)
+                        )
+                    }
+
+                    if (topic.whyImportant.isNotBlank()) {
+                        Text(
+                            text = "২. কেন গুরুত্বপূর্ণ?:",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = topic.whyImportant,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp)
+                        )
+                    }
+
+                    if (topic.background.isNotBlank()) {
+                        Text(
+                            text = "৩. ঐতিহাসিক পটভূমি:",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = topic.background,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp)
+                        )
+                    }
+
+                    if (topic.bangladeshRelevance.isNotBlank()) {
+                        Text(
+                            text = "৪. বাংলাদেশের জন্য প্রাসঙ্গিকতা:",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        Text(
+                            text = topic.bangladeshRelevance,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp)
+                        )
+                    }
+
+                    val takeaways = topic.parseTakeaways()
+                    if (takeaways.isNotEmpty()) {
+                        Text(
+                            text = "৫. BCS পরীক্ষার জন্য যা পড়বেন:",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                        takeaways.forEach { takeaway ->
+                            Text(
+                                text = "• $takeaway",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(vertical = 2.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
+
+                    // User Personal Note Section
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "আপনার ব্যক্তিগত নোট",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelLarge
+                                )
+                                TextButton(
+                                    onClick = {
+                                        if (isEditingNote) {
+                                            onSaveNote(noteText)
+                                            isEditingNote = false
+                                        } else {
+                                            isEditingNote = true
+                                        }
+                                    }
+                                ) {
+                                    Text(if (isEditingNote) "সংরক্ষণ" else if (topic.userNote.isBlank()) "নোট যোগ করুন" else "সম্পাদনা")
+                                }
+                            }
+
+                            if (isEditingNote) {
+                                OutlinedTextField(
+                                    value = noteText,
+                                    onValueChange = { noteText = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    placeholder = { Text("এই বিষয়ের উপর আপনার নোট লিখুন...") }
+                                )
+                            } else if (topic.userNote.isNotBlank()) {
+                                Text(
+                                    text = topic.userNote,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }

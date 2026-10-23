@@ -49,11 +49,16 @@ class BcsViewModel(application: Application) : AndroidViewModel(application) {
     private val _managedNewspapers = MutableStateFlow<List<ManagedNewspaper>>(ManagedNewspaper.defaultSources)
     val managedNewspapers: StateFlow<List<ManagedNewspaper>> = _managedNewspapers.asStateFlow()
 
-    private val _allReports = MutableStateFlow(BcsDataSource.getAllReports())
-    val allReports: StateFlow<List<DailyReport>> = _allReports.asStateFlow()
+    private val initialReport: DailyReport =
+        syncService.loadReportFromCache() ?: BcsDataSource.generateDynamicTodayReport()
 
-    private val _currentReport = MutableStateFlow(BcsDataSource.report16Oct2026)
+    private val _currentReport = MutableStateFlow(initialReport)
     val currentReport: StateFlow<DailyReport> = _currentReport.asStateFlow()
+
+    private val _allReports = MutableStateFlow(
+        listOf(initialReport) + BcsDataSource.getAllReports().filterNot { it.id == initialReport.id }
+    )
+    val allReports: StateFlow<List<DailyReport>> = _allReports.asStateFlow()
 
     private val _selectedTabIndex = MutableStateFlow(0)
     val selectedTabIndex: StateFlow<Int> = _selectedTabIndex.asStateFlow()
@@ -182,6 +187,13 @@ class BcsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshSyncCountdown() {
         syncService.refreshCountdown()
+    }
+
+    fun checkAndPerformDailySyncIfDue() {
+        refreshSyncCountdown()
+        if (syncService.isSyncDueToday()) {
+            triggerDailySync()
+        }
     }
 
     private fun observeAuthAndSyncNewspapers() {
@@ -477,7 +489,7 @@ class BcsViewModel(application: Application) : AndroidViewModel(application) {
     private var lastEngineCallTime = 0L
 
     // Run Daily Analysis Engine (Repeatable daily workflow based on user's active newspaper sources)
-    fun runDailyAnalysisEngine(dateLabel: String = "১৬ অক্টোবর ২০২৬") {
+    fun runDailyAnalysisEngine(dateLabel: String = BangladeshTimeHelper.getFormattedBstDate()) {
         val now = System.currentTimeMillis()
         if (_isGenerating.value) return
         if (now - lastEngineCallTime < 10_000L) {

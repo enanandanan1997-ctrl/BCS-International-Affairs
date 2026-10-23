@@ -66,24 +66,11 @@ interface BcsDao {
 
     @Query("UPDATE saved_topics SET userNote = :note WHERE id = :id")
     suspend fun updateUserNote(id: String, note: String)
-
-    // SavedNewsTopic operations
-    @Query("SELECT * FROM saved_news_topics WHERE isAvailableOffline = 1 ORDER BY date DESC")
-    fun getAllSavedNewsTopics(): Flow<List<SavedNewsTopic>>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertSavedNewsTopic(newsTopic: SavedNewsTopic)
-
-    @Query("DELETE FROM saved_news_topics WHERE id = :id")
-    suspend fun deleteSavedNewsTopic(id: String)
-
-    @Query("SELECT EXISTS(SELECT 1 FROM saved_news_topics WHERE id = :id AND isAvailableOffline = 1)")
-    fun isNewsTopicSavedFlow(id: String): Flow<Boolean>
 }
 
 @Database(
-    entities = [BookmarkedMcq::class, QuizAttempt::class, SavedTopicEntity::class, SavedNewsTopic::class],
-    version = 3,
+    entities = [BookmarkedMcq::class, QuizAttempt::class, SavedTopicEntity::class],
+    version = 4,
     exportSchema = false
 )
 abstract class BcsDatabase : RoomDatabase() {
